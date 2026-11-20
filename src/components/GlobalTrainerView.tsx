@@ -66,13 +66,13 @@ export const GlobalTrainerView: React.FC<GlobalTrainerViewProps> = ({
 
       {/* Filter Controls */}
       <div className="flex flex-col gap-3 rounded-xl border border-[#DDD4BE] bg-[#F7F4EC]/75 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-[#243047] dark:bg-[#161D2B]">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex w-full items-center gap-2 sm:w-auto">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
             <Filter className="h-4 w-4 shrink-0 text-[#57534E] dark:text-[#94A3B8]" aria-hidden="true" />
             <label htmlFor="trainer-chapter-select" className="text-xs font-semibold text-[#1C1917] dark:text-[#F4F1EA] shrink-0">
               Розділ:
             </label>
-            <div className="relative flex-1 sm:flex-initial">
+            <div className="relative min-w-0 flex-1 sm:flex-initial">
               <select
                 id="trainer-chapter-select"
                 value={chapterFilter === 'all' ? 'all' : String(chapterFilter)}
@@ -80,7 +80,7 @@ export const GlobalTrainerView: React.FC<GlobalTrainerViewProps> = ({
                   const val = e.target.value;
                   setChapterFilter(val === 'all' ? 'all' : Number(val));
                 }}
-                className="h-10 w-full appearance-none rounded-lg border border-[#DDD4BE] bg-white pl-3 pr-8 text-xs font-medium text-[#1C1917] focus:border-[#1E3A8A] focus:outline-none dark:border-[#2A354D] dark:bg-[#0F141E] dark:text-[#F4F1EA] sm:max-w-[280px]"
+                className="h-10 w-full min-w-0 max-w-full truncate appearance-none rounded-lg border border-[#DDD4BE] bg-white pl-3 pr-8 text-xs font-medium text-[#1C1917] focus:border-[#1E3A8A] focus:outline-none dark:border-[#2A354D] dark:bg-[#0F141E] dark:text-[#F4F1EA] sm:max-w-[280px]"
               >
                 <option value="all">Усі розділи (100 карток)</option>
                 {chapters.map((ch) => (

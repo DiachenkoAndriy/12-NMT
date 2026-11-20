@@ -36,6 +36,21 @@
   transform: rotateY(180deg);
 }
 
+@keyframes viewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-view-in {
+  animation: viewFadeIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Hide scrollbars for horizontal scrollers while preserving scroll */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
@@ -48,6 +63,9 @@
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+  .animate-view-in {
+    animation: none;
   }
   .transition-transform,
   .transition-all {

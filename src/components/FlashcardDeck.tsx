@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, ChevronLeft, ChevronRight, RotateCw, Shuffle } from 'lucide-react';
 import { Flashcard } from '../types/portal';
-import { shuffleFlashcards } from '../utils/portalLogic';
+import { formatReadableContent, shuffleFlashcards } from '../utils/portalLogic';
+import { ReadableText } from './ReadableText';
 
 interface FlashcardDeckProps {
   cards: Flashcard[];
@@ -28,7 +29,41 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
     setIsFlipped(false);
   }, [cards]);
 
-  if (deck.length === 0) {
+  const safeIndex = deck.length === 0 ? 0 : Math.min(currentIndex, deck.length - 1);
+  const currentCard = deck[safeIndex];
+
+  const handlePrev = useCallback(() => {
+    if (deck.length === 0) return;
+    setIsFlipped(false);
+    setCurrentIndex((prev) => (prev === 0 ? deck.length - 1 : prev - 1));
+  }, [deck.length]);
+
+  const handleNext = useCallback(() => {
+    if (deck.length === 0) return;
+    setIsFlipped(false);
+    setCurrentIndex((prev) => (prev === deck.length - 1 ? 0 : prev + 1));
+  }, [deck.length]);
+
+  const handleShuffle = () => {
+    setIsFlipped(false);
+    setDeck((prev) => shuffleFlashcards(prev));
+    setCurrentIndex(0);
+  };
+
+  const handleDeckKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      handlePrev();
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      handleNext();
+    } else if ((e.key === 'm' || e.key === 'м') && currentCard) {
+      e.preventDefault();
+      onToggleMemorized(currentCard.id);
+    }
+  };
+
+  if (deck.length === 0 || !currentCard) {
     return (
       <div className="rounded-xl border border-[#E5DEC9] bg-white p-8 text-center dark:border-[#243047] dark:bg-[#161D2B]">
         <p className="text-base font-medium text-[#1C1917] dark:text-[#F4F1EA]">
@@ -41,29 +76,12 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
     );
   }
 
-  const safeIndex = Math.min(currentIndex, deck.length - 1);
-  const currentCard = deck[safeIndex];
   const isMemorized = memorizedIds.includes(currentCard.id);
   const memorizedInDeckCount = deck.filter((c) => memorizedIds.includes(c.id)).length;
-
-  const handlePrev = () => {
-    setIsFlipped(false);
-    setCurrentIndex((prev) => (prev === 0 ? deck.length - 1 : prev - 1));
-  };
-
-  const handleNext = () => {
-    setIsFlipped(false);
-    setCurrentIndex((prev) => (prev === deck.length - 1 ? 0 : prev + 1));
-  };
-
-  const handleShuffle = () => {
-    setIsFlipped(false);
-    setDeck((prev) => shuffleFlashcards(prev));
-    setCurrentIndex(0);
-  };
+  const deckProgressPercent = Math.round(((safeIndex + 1) / deck.length) * 100);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" onKeyDown={handleDeckKeyDown}>
       {/* Header & Deck Stats */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -103,7 +121,15 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
         </button>
       </div>
 
-      {/* 3D Flippable Flashcard */}
+      {/* Subtle Deck Position Progress Bar */}
+      <div className="h-1 w-full overflow-hidden rounded-full bg-[#E5DEC9]/80 dark:bg-[#243047]">
+        <div
+          className="h-full rounded-full bg-[#1E3A8A] transition-all duration-300 dark:bg-[#F59E0B]"
+          style={{ width: `${deckProgressPercent}%` }}
+        />
+      </div>
+
+      {/* 3D Flippable Flashcard (CSS Grid stack prevents clipping long answers) */}
       <div className="perspective-1000">
         <button
           type="button"
@@ -114,13 +140,14 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
               ? `Відповідь на картку ${safeIndex + 1}. Натисніть, щоб повернути до питання`
               : `Питання картки ${safeIndex + 1}. Натисніть, щоб переглянути відповідь`
           }
-          className={`relative block min-h-[250px] w-full cursor-pointer text-left transition-transform duration-500 transform-style-3d focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#1E3A8A] sm:min-h-[270px] ${
+          className={`grid w-full cursor-pointer text-left transition-transform duration-500 transform-style-3d focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#1E3A8A] ${
             isFlipped ? 'rotate-y-180' : ''
           }`}
         >
           {/* Front: Question */}
           <div
-            className={`backface-hidden absolute inset-0 flex flex-col justify-between rounded-2xl border p-6 shadow-[0_4px_20px_rgb(0,0,0,0.03)] sm:p-8 ${
+            aria-hidden={isFlipped}
+            className={`backface-hidden col-start-1 row-start-1 flex min-h-[250px] w-full flex-col justify-between rounded-2xl border p-6 shadow-[0_4px_20px_rgb(0,0,0,0.03)] sm:min-h-[270px] sm:p-8 ${
               isMemorized
                 ? 'border-[#059669]/40 bg-white dark:border-[#10B981]/40 dark:bg-[#161D2B]'
                 : 'border-[#DDD4BE] bg-white dark:border-[#2A354D] dark:bg-[#161D2B]'
@@ -146,7 +173,10 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
           </div>
 
           {/* Back: Answer */}
-          <div className="backface-hidden rotate-y-180 absolute inset-0 flex flex-col justify-between rounded-2xl border border-[#1E3A8A]/35 bg-[#F4F6FB] p-6 shadow-[0_4px_20px_rgb(30,58,138,0.06)] sm:p-8 dark:border-[#F59E0B]/40 dark:bg-[#1A2438]">
+          <div
+            aria-hidden={!isFlipped}
+            className="backface-hidden rotate-y-180 col-start-1 row-start-1 flex min-h-[250px] w-full flex-col justify-between rounded-2xl border border-[#1E3A8A]/35 bg-[#F4F6FB] p-6 shadow-[0_4px_20px_rgb(30,58,138,0.06)] sm:min-h-[270px] sm:p-8 dark:border-[#F59E0B]/40 dark:bg-[#1A2438]"
+          >
             <div className="flex items-center justify-between gap-2 text-xs font-medium text-[#1E3A8A] dark:text-[#F59E0B]">
               <span>Еталонна відповідь НМТ</span>
               {isMemorized && (
@@ -154,10 +184,24 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
               )}
             </div>
 
-            <div className="my-auto py-4 text-center">
-              <p className="text-base font-medium leading-relaxed text-[#1C1917] dark:text-[#F4F1EA] sm:text-lg">
-                {currentCard.answer}
-              </p>
+            <div className="my-auto py-4">
+              {formatReadableContent(currentCard.answer, {
+                listLengthThreshold: 90,
+                sentenceThreshold: 230,
+                preferListForLongText: true,
+              }).kind === 'plain' ? (
+                <p className="text-center text-base font-medium leading-relaxed text-[#1C1917] dark:text-[#F4F1EA] sm:text-lg">
+                  {currentCard.answer}
+                </p>
+              ) : (
+                <ReadableText
+                  text={currentCard.answer}
+                  listLengthThreshold={90}
+                  sentenceThreshold={230}
+                  preferListForLongText={true}
+                  className="mx-auto max-w-2xl text-left text-sm font-medium leading-relaxed text-[#1C1917] dark:text-[#F4F1EA] sm:text-[15.5px]"
+                />
+              )}
             </div>
 
             <div className="flex items-center justify-center gap-1.5 text-xs font-medium text-[#57534E] dark:text-[#A8B2C5]">
@@ -204,6 +248,10 @@ export const FlashcardDeck: React.FC<FlashcardDeckProps> = ({
           <span>{isMemorized ? 'Запам’ятав (зняти)' : 'Запам’ятав'}</span>
         </button>
       </div>
+
+      <p className="hidden text-center text-[11px] text-[#78716C] dark:text-[#8B97AD] sm:block">
+        Клавіатура у тренажері: ← / → перемикати картки, Пробіл — перевернути, M — позначити як вивчену.
+      </p>
     </div>
   );
 };

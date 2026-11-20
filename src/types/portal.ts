@@ -108,11 +108,22 @@ export interface HistoricalFigure {
   chapterIds: number[];
 }
 
+export interface NmtQuestion {
+  id: string;
+  chapterId: number;
+  kind: 'Факт і хронологія' | 'Першоджерело' | 'Персоналія' | 'Термін і поняття' | 'Пастка НМТ';
+  question: string;
+  options: [string, string, string, string];
+  correctIndex: 0 | 1 | 2 | 3;
+  explanation: string;
+}
+
 export type ActiveView =
   | { type: 'chapter'; chapterId: number; highlightText?: string }
   | { type: 'timeline' }
   | { type: 'figures' }
-  | { type: 'trainer' };
+  | { type: 'trainer' }
+  | { type: 'quiz'; initialChapterId?: number };
 
 export interface SearchResult {
   id: string;
@@ -122,4 +133,5 @@ export interface SearchResult {
   title: string;
   snippet: string;
   matchText: string;
+  sectionId?: string;
 }

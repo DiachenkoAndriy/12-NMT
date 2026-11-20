@@ -8,17 +8,21 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
+  Clock,
   Compass,
   ImageOff,
   KeyRound,
   Quote,
+  RefreshCw,
   Users,
   X,
   ZoomIn,
 } from 'lucide-react';
 import { Chapter, ContentBlock, VisualInsertItem } from '../types/portal';
-import { parseStructuredListItem } from '../utils/portalLogic';
+import { estimateReadingMinutes, parseStructuredListItem } from '../utils/portalLogic';
 import { FlashcardDeck } from './FlashcardDeck';
+import { ReadableText } from './ReadableText';
 import { RichText } from './RichText';
 
 interface ChapterViewProps {
@@ -27,8 +31,13 @@ interface ChapterViewProps {
   isCompleted: boolean;
   onToggleComplete: (chapterId: number) => void;
   onNavigateChapter: (chapterId: number) => void;
+  onStartChapterQuiz?: (chapterId: number) => void;
+  prevChapterTitle?: string;
+  nextChapterTitle?: string;
+  requestedRefTab?: { chapterId: number; tab: 'dates' | 'terms' | 'figures'; seq: number } | null;
   memorizedCardIds: string[];
   onToggleMemorizedCard: (cardId: string) => void;
+  onReadProgressChange?: (progress: number) => void;
 }
 
 export const ChapterView: React.FC<ChapterViewProps> = ({
@@ -37,13 +46,20 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
   isCompleted,
   onToggleComplete,
   onNavigateChapter,
+  onStartChapterQuiz,
+  prevChapterTitle,
+  nextChapterTitle,
+  requestedRefTab,
   memorizedCardIds,
   onToggleMemorizedCard,
+  onReadProgressChange,
 }) => {
   const [referenceTab, setReferenceTab] = useState<'dates' | 'terms' | 'figures'>('dates');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [failedUrls, setFailedUrls] = useState<Record<string, boolean>>({});
-  const [readProgress, setReadProgress] = useState(0);
+  const [retryCounts, setRetryCounts] = useState<Record<string, number>>({});
+
+  const readingMinutes = useMemo(() => estimateReadingMinutes(chapter), [chapter]);
 
   // Collect all inline visual items in reading order for seamless Prev/Next Lightbox browsing
   const allVisualItems = useMemo<VisualInsertItem[]>(() => {
@@ -75,17 +91,17 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
     [allVisualItems],
   );
 
-  // Reading depth indicator
+  // Reading depth indicator synced to Header
   useEffect(() => {
     const updateProgress = () => {
       const scrollTop = window.scrollY;
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
       if (docHeight <= 0) {
-        setReadProgress(0);
+        onReadProgressChange?.(0);
         return;
       }
       const pct = Math.min(100, Math.max(0, Math.round((scrollTop / docHeight) * 100)));
-      setReadProgress(pct);
+      onReadProgressChange?.(pct);
     };
     updateProgress();
     window.addEventListener('scroll', updateProgress, { passive: true });
@@ -94,16 +110,26 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       window.removeEventListener('scroll', updateProgress);
       window.removeEventListener('resize', updateProgress);
     };
-  }, [chapter.id]);
+  }, [chapter.id, onReadProgressChange]);
 
   // Reset lightbox when changing chapter
   useEffect(() => {
     setLightboxIndex(null);
   }, [chapter.id]);
 
-  // Keyboard navigation in Lightbox
+  // Switch reference tab automatically when jumped via global search
+  useEffect(() => {
+    if (requestedRefTab && requestedRefTab.chapterId === chapter.id) {
+      setReferenceTab(requestedRefTab.tab);
+    }
+  }, [requestedRefTab, chapter.id]);
+
+  // Keyboard navigation & body scroll lock in Lightbox
   useEffect(() => {
     if (lightboxIndex === null) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setLightboxIndex(null);
@@ -116,11 +142,25 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [lightboxIndex, allVisualItems.length]);
 
   const markImageFailed = (src: string) => {
     setFailedUrls((prev) => (prev[src] ? prev : { ...prev, [src]: true }));
+  };
+
+  const handleRetryImage = (src: string) => {
+    setFailedUrls((prev) => ({ ...prev, [src]: false }));
+    setRetryCounts((prev) => ({ ...prev, [src]: (prev[src] ?? 0) + 1 }));
+  };
+
+  const getDisplaySrc = (src: string) => {
+    const count = retryCounts[src] ?? 0;
+    if (count === 0) return src;
+    return src.includes('?') ? `${src}&retry=${count}` : `${src}?retry=${count}`;
   };
 
   const lightboxItem = lightboxIndex !== null ? allVisualItems[lightboxIndex] ?? null : null;
@@ -129,16 +169,19 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
     switch (block.type) {
       case 'paragraph':
         return (
-          <p
+          <ReadableText
             key={idx}
+            text={block.text}
+            sentenceThreshold={340}
+            maxChunkChars={260}
+            listLengthThreshold={160}
+            paragraphSpacing="space-y-3"
             className={
               isFirstParagraphInSection
-                ? 'max-w-[74ch] text-[16px] leading-[1.8] text-[#1C1917] dark:text-[#E2E8F0] sm:text-[17px]'
+                ? 'max-w-[74ch] text-[16px] leading-[1.82] text-[#1C1917] dark:text-[#F1F5F9] sm:text-[17px]'
                 : 'max-w-[74ch] text-[15px] leading-[1.78] text-[#292524] dark:text-[#CBD5E1] sm:text-base'
             }
-          >
-            <RichText text={block.text} />
-          </p>
+          />
         );
       case 'subheading':
         return (
@@ -164,7 +207,12 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                     {String(itemIdx + 1).padStart(2, '0')}
                   </span>
                   <div className="min-w-0 flex-1 text-[15px] leading-[1.7] text-[#292524] dark:text-[#CBD5E1] sm:text-base">
-                    <RichText text={item} />
+                    <ReadableText
+                      text={item}
+                      sentenceThreshold={280}
+                      maxChunkChars={220}
+                      listLengthThreshold={140}
+                    />
                   </div>
                 </li>
               ))}
@@ -179,38 +227,77 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
           const maxBodyLength = Math.max(
             ...parsedItems.map((p) => (p ? p.body.length : 0)),
           );
-          const useTwoColumns = maxBodyLength <= 250 && block.items.length >= 2;
+          const useTwoColumns =
+            maxBodyLength <= 260 &&
+            block.items.length >= 2 &&
+            block.items.length % 2 === 0;
+
+          if (useTwoColumns) {
+            return (
+              <div key={idx} className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
+                {parsedItems.map((parsed, itemIdx) => {
+                  if (!parsed) return null;
+                  return (
+                    <div
+                      key={itemIdx}
+                      className="rounded-xl border border-[#E5DEC9] bg-white p-4 shadow-[0_2px_8px_rgb(0,0,0,0.02)] transition-colors hover:border-[#1E3A8A]/35 sm:p-5 dark:border-[#243047] dark:bg-[#161D2B] dark:hover:border-[#F59E0B]/35"
+                    >
+                      <div className="flex items-start justify-between gap-3 border-b border-[#EFEAE0] pb-2.5 dark:border-[#243047]">
+                        <div className="text-[15px] font-bold leading-snug text-[#1E3A8A] dark:text-[#93C5FD] sm:text-base">
+                          <RichText
+                            text={parsed.heading}
+                            boldClassName="font-bold text-[#1E3A8A] dark:text-[#93C5FD]"
+                          />
+                        </div>
+                        <span className="mt-0.5 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-[#B45309] dark:text-[#F59E0B]">
+                          {String(itemIdx + 1).padStart(2, '0')}
+                        </span>
+                      </div>
+                      <ReadableText
+                        text={parsed.body}
+                        sentenceThreshold={250}
+                        maxChunkChars={210}
+                        listLengthThreshold={130}
+                        className="mt-2.5 text-[14.5px] leading-[1.7] text-[#292524] dark:text-[#CBD5E1] sm:text-[15px]"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
 
           return (
             <div
               key={idx}
-              className={
-                useTwoColumns
-                  ? 'grid grid-cols-1 gap-3.5 md:grid-cols-2'
-                  : 'space-y-3'
-              }
+              className="divide-y divide-[#EFEAE0] overflow-hidden rounded-2xl border border-[#DDD4BE] bg-white shadow-[0_2px_10px_rgb(0,0,0,0.02)] dark:divide-[#243047] dark:border-[#243047] dark:bg-[#161D2B]"
             >
               {parsedItems.map((parsed, itemIdx) => {
                 if (!parsed) return null;
                 return (
                   <div
                     key={itemIdx}
-                    className="rounded-xl border border-[#E5DEC9] bg-white p-4 shadow-[0_2px_8px_rgb(0,0,0,0.02)] transition-colors hover:border-[#1E3A8A]/35 sm:p-5 dark:border-[#243047] dark:bg-[#161D2B] dark:hover:border-[#F59E0B]/35"
+                    className="grid grid-cols-1 gap-2 p-4 transition-colors hover:bg-[#FBF9F5] sm:grid-cols-[34px_230px_1fr] sm:items-baseline sm:gap-4 sm:px-5 sm:py-4 dark:hover:bg-[#1A2334]"
                   >
-                    <div className="flex items-start justify-between gap-3 border-b border-[#EFEAE0] pb-2.5 dark:border-[#243047]">
-                      <div className="text-[15px] font-bold leading-snug text-[#1E3A8A] dark:text-[#93C5FD] sm:text-base">
-                        <RichText
-                          text={parsed.heading}
-                          boldClassName="font-bold text-[#1E3A8A] dark:text-[#93C5FD]"
-                        />
-                      </div>
-                      <span className="mt-0.5 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-[#B45309] dark:text-[#F59E0B]">
-                        {String(itemIdx + 1).padStart(2, '0')}
+                    <span className="hidden font-mono text-xs font-semibold tabular-nums text-[#B45309] dark:text-[#F59E0B] sm:inline">
+                      {String(itemIdx + 1).padStart(2, '0')}
+                    </span>
+                    <div className="text-[15px] font-bold leading-snug text-[#1E3A8A] dark:text-[#93C5FD]">
+                      <span className="mr-2 font-mono text-xs font-semibold tabular-nums text-[#B45309] dark:text-[#F59E0B] sm:hidden">
+                        {String(itemIdx + 1).padStart(2, '0')}.
                       </span>
+                      <RichText
+                        text={parsed.heading}
+                        boldClassName="font-bold text-[#1E3A8A] dark:text-[#93C5FD]"
+                      />
                     </div>
-                    <p className="mt-2.5 text-[14.5px] leading-[1.7] text-[#292524] dark:text-[#CBD5E1] sm:text-[15px]">
-                      <RichText text={parsed.body} />
-                    </p>
+                    <ReadableText
+                      text={parsed.body}
+                      sentenceThreshold={270}
+                      maxChunkChars={220}
+                      listLengthThreshold={135}
+                      className="text-[14.5px] leading-[1.7] text-[#292524] dark:text-[#CBD5E1] sm:text-[15px]"
+                    />
                   </div>
                 );
               })}
@@ -234,7 +321,12 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                     aria-hidden="true"
                   />
                   <div className="min-w-0 flex-1">
-                    <RichText text={item} />
+                    <ReadableText
+                      text={item}
+                      sentenceThreshold={270}
+                      maxChunkChars={220}
+                      listLengthThreshold={135}
+                    />
                   </div>
                 </li>
               ))}
@@ -252,12 +344,17 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
               <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span>{block.label}</span>
             </div>
-            <p className="mt-2 text-[15px] leading-relaxed text-[#451A03] dark:text-[#FDE68A]">
-              <RichText
-                text={block.text}
-                boldClassName="font-semibold text-[#78350F] dark:text-[#FEF3C7]"
-              />
-            </p>
+            <ReadableText
+              text={block.text}
+              sentenceThreshold={270}
+              maxChunkChars={220}
+              listLengthThreshold={135}
+              boldClassName="font-semibold text-[#78350F] dark:text-[#FEF3C7]"
+              prefixClassName="font-semibold text-[#78350F] dark:text-[#FEF3C7]"
+              leadClassName="font-medium text-[#451A03] dark:text-[#FDE68A]"
+              bulletClassName="bg-[#B45309] dark:bg-[#FBBF24]"
+              className="mt-2 text-[15px] leading-relaxed text-[#451A03] dark:text-[#FDE68A]"
+            />
           </div>
         );
       case 'flow':
@@ -326,7 +423,12 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                               : 'text-[#292524] dark:text-[#CBD5E1]'
                           }`}
                         >
-                          <RichText text={cell} />
+                          <ReadableText
+                            text={cell}
+                            sentenceThreshold={195}
+                            listLengthThreshold={110}
+                            preferListForLongText={true}
+                          />
                         </td>
                       ))}
                     </tr>
@@ -337,7 +439,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
           </div>
         );
       case 'figure': {
-        const isBroken = failedUrls[block.src];
+        const isBroken = Boolean(failedUrls[block.src]);
         return (
           <figure
             key={idx}
@@ -356,37 +458,43 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={() => !isBroken && openLightboxForSrc(block.src, block)}
-              disabled={isBroken}
-              aria-label={`Збільшити зображення: ${block.alt}`}
-              className="group relative flex w-full items-center justify-center overflow-hidden rounded-xl border border-[#E5DEC9] bg-[#F4EFE4] p-2.5 transition-colors hover:border-[#1E3A8A]/45 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] disabled:cursor-default dark:border-[#243047] dark:bg-[#0B0F17] dark:hover:border-[#F59E0B]/45"
-            >
-              {isBroken ? (
-                <div className="flex h-48 flex-col items-center justify-center gap-2 text-xs text-[#78716C] dark:text-[#94A3B8]">
-                  <ImageOff className="h-5 w-5" aria-hidden="true" />
-                  <span>Ілюстрація тимчасово недоступна</span>
-                </div>
-              ) : (
-                <>
-                  <img
-                    src={block.src}
-                    alt={block.alt}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    onError={() => markImageFailed(block.src)}
-                    className="max-h-[400px] w-auto max-w-full rounded-lg object-contain transition-transform duration-300 group-hover:scale-[1.015]"
-                  />
-                  <span
-                    aria-hidden="true"
-                    className="absolute right-3 bottom-3 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DDD4BE] bg-white/95 text-[#1C1917] opacity-80 shadow-xs transition-opacity group-hover:opacity-100 dark:border-[#2A354D] dark:bg-[#161D2B]/95 dark:text-[#F4F1EA]"
-                  >
-                    <ZoomIn className="h-4 w-4" />
-                  </span>
-                </>
-              )}
-            </button>
+            {isBroken ? (
+              <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-[#E5DEC9] bg-[#F4EFE4] px-4 text-center text-xs text-[#78716C] dark:border-[#243047] dark:bg-[#0B0F17] dark:text-[#94A3B8]">
+                <ImageOff className="h-5 w-5" aria-hidden="true" />
+                <span>Не вдалося завантажити ілюстрацію з архіву</span>
+                <button
+                  type="button"
+                  onClick={() => handleRetryImage(block.src)}
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[#DDD4BE] bg-white px-3 py-1.5 text-xs font-semibold text-[#1E3A8A] transition-colors hover:bg-[#EFEAE0] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F59E0B] dark:hover:bg-[#1D2638]"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Повторити завантаження</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => openLightboxForSrc(block.src, block)}
+                aria-label={`Збільшити зображення: ${block.alt}`}
+                className="group relative flex w-full items-center justify-center overflow-hidden rounded-xl border border-[#E5DEC9] bg-[#F4EFE4] p-2.5 transition-colors hover:border-[#1E3A8A]/45 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] dark:border-[#243047] dark:bg-[#0B0F17] dark:hover:border-[#F59E0B]/45"
+              >
+                <img
+                  key={`${block.src}-${retryCounts[block.src] ?? 0}`}
+                  src={getDisplaySrc(block.src)}
+                  alt={block.alt}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={() => markImageFailed(block.src)}
+                  className="max-h-[400px] w-auto max-w-full rounded-lg object-contain transition-transform duration-300 group-hover:scale-[1.015]"
+                />
+                <span
+                  aria-hidden="true"
+                  className="absolute right-3 bottom-3 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DDD4BE] bg-white/95 text-[#1C1917] opacity-80 shadow-xs transition-opacity group-hover:opacity-100 dark:border-[#2A354D] dark:bg-[#161D2B]/95 dark:text-[#F4F1EA]"
+                >
+                  <ZoomIn className="h-4 w-4" />
+                </span>
+              </button>
+            )}
 
             <figcaption className="mt-3 border-t border-[#EFEAE0] pt-2.5 text-xs leading-relaxed text-[#57534E] dark:border-[#243047] dark:text-[#A8B2C5] sm:text-[13px]">
               <RichText text={block.caption} />
@@ -411,43 +519,49 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
             )}
             <div className={`grid gap-4 ${colsClass}`}>
               {block.items.map((item, itemIdx) => {
-                const isBroken = failedUrls[item.src];
+                const isBroken = Boolean(failedUrls[item.src]);
                 return (
                   <figure
                     key={itemIdx}
                     className="flex flex-col overflow-hidden rounded-xl border border-[#DDD4BE] bg-white p-3 shadow-[0_2px_8px_rgb(0,0,0,0.02)] transition-colors hover:border-[#1E3A8A]/40 dark:border-[#243047] dark:bg-[#161D2B] dark:hover:border-[#F59E0B]/40"
                   >
-                    <button
-                      type="button"
-                      onClick={() => !isBroken && openLightboxForSrc(item.src, item)}
-                      disabled={isBroken}
-                      aria-label={`Збільшити зображення: ${item.title || item.alt}`}
-                      className="group relative flex h-56 w-full items-center justify-center overflow-hidden rounded-lg border border-[#EFEAE0] bg-[#F4EFE4] p-2 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] disabled:cursor-default dark:border-[#243047] dark:bg-[#0B0F17]"
-                    >
-                      {isBroken ? (
-                        <div className="flex flex-col items-center justify-center gap-1.5 text-xs text-[#78716C] dark:text-[#94A3B8]">
-                          <ImageOff className="h-5 w-5" aria-hidden="true" />
-                          <span>Зображення недоступне</span>
-                        </div>
-                      ) : (
-                        <>
-                          <img
-                            src={item.src}
-                            alt={item.alt}
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                            onError={() => markImageFailed(item.src)}
-                            className="h-full w-full rounded object-contain transition-transform duration-300 group-hover:scale-[1.03]"
-                          />
-                          <span
-                            aria-hidden="true"
-                            className="absolute right-2 bottom-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#DDD4BE] bg-white/95 text-[#1C1917] opacity-80 shadow-xs transition-opacity group-hover:opacity-100 dark:border-[#2A354D] dark:bg-[#161D2B]/95 dark:text-[#F4F1EA]"
-                          >
-                            <ZoomIn className="h-3.5 w-3.5" />
-                          </span>
-                        </>
-                      )}
-                    </button>
+                    {isBroken ? (
+                      <div className="flex h-56 flex-col items-center justify-center gap-2 rounded-lg border border-[#EFEAE0] bg-[#F4EFE4] px-3 text-center text-xs text-[#78716C] dark:border-[#243047] dark:bg-[#0B0F17] dark:text-[#94A3B8]">
+                        <ImageOff className="h-5 w-5" aria-hidden="true" />
+                        <span>Зображення недоступне</span>
+                        <button
+                          type="button"
+                          onClick={() => handleRetryImage(item.src)}
+                          className="inline-flex min-h-[34px] items-center gap-1 rounded-md border border-[#DDD4BE] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#1E3A8A] hover:bg-[#EFEAE0] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F59E0B]"
+                        >
+                          <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                          <span>Повторити</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openLightboxForSrc(item.src, item)}
+                        aria-label={`Збільшити зображення: ${item.title || item.alt}`}
+                        className="group relative flex h-56 w-full items-center justify-center overflow-hidden rounded-lg border border-[#EFEAE0] bg-[#F4EFE4] p-2 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] dark:border-[#243047] dark:bg-[#0B0F17]"
+                      >
+                        <img
+                          key={`${item.src}-${retryCounts[item.src] ?? 0}`}
+                          src={getDisplaySrc(item.src)}
+                          alt={item.alt}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          onError={() => markImageFailed(item.src)}
+                          className="h-full w-full rounded object-contain transition-transform duration-300 group-hover:scale-[1.03]"
+                        />
+                        <span
+                          aria-hidden="true"
+                          className="absolute right-2 bottom-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#DDD4BE] bg-white/95 text-[#1C1917] opacity-80 shadow-xs transition-opacity group-hover:opacity-100 dark:border-[#2A354D] dark:bg-[#161D2B]/95 dark:text-[#F4F1EA]"
+                        >
+                          <ZoomIn className="h-3.5 w-3.5" />
+                        </span>
+                      </button>
+                    )}
 
                     <figcaption className="mt-3 flex-1 space-y-1.5 border-t border-[#EFEAE0] pt-2.5 dark:border-[#243047]">
                       <div className="flex items-start justify-between gap-2">
@@ -479,18 +593,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
   };
 
   return (
-    <article className="mx-auto max-w-4xl space-y-11 pb-12">
-      {/* Subtle Top Reading Progress Line */}
-      <div
-        className="pointer-events-none fixed left-0 right-0 top-0 z-50 h-[3px] bg-transparent"
-        aria-hidden="true"
-      >
-        <div
-          className="h-full bg-[#1E3A8A] transition-[width] duration-150 dark:bg-[#F59E0B]"
-          style={{ width: `${readProgress}%` }}
-        />
-      </div>
-
+    <article className="animate-view-in mx-auto max-w-4xl space-y-11 pb-12">
       {/* Editorial Broadsheet Chapter Header */}
       <header className="rounded-2xl border border-[#DDD4BE] bg-white p-5 shadow-[0_2px_14px_rgb(0,0,0,0.03)] sm:p-8 dark:border-[#243047] dark:bg-[#131A26]">
         <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-[#78716C] dark:text-[#94A3B8]">
@@ -499,6 +602,11 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
           </span>
           <span aria-hidden="true">·</span>
           <span>{chapter.period}</span>
+          <span aria-hidden="true">·</span>
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>~{readingMinutes} хв читання</span>
+          </span>
           <span aria-hidden="true">·</span>
           <span className="tabular-nums">{chapter.flashcards.length} флеш-карток</span>
           <span aria-hidden="true">·</span>
@@ -537,8 +645,8 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
           </div>
         </div>
 
-        {/* Utility Anchors & Completion CTA */}
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#EFEAE0] pt-5 dark:border-[#243047]">
+        {/* Utility Anchors & Completion / Chapter Quiz CTAs */}
+        <div className="mt-5 flex flex-col gap-3 border-t border-[#EFEAE0] pt-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between dark:border-[#243047]">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium text-[#57534E] dark:text-[#A8B2C5]">
             <a
               href={`#ch-${chapter.id}-traps`}
@@ -566,19 +674,32 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
             </a>
           </div>
 
-          <button
-            type="button"
-            onClick={() => onToggleComplete(chapter.id)}
-            aria-pressed={isCompleted}
-            className={`inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[#1E3A8A] sm:w-auto whitespace-nowrap ${
-              isCompleted
-                ? 'border border-[#059669]/40 bg-[#ECFDF5] text-[#047857] hover:bg-[#D1FAE5] dark:border-[#10B981]/40 dark:bg-[#064E3B]/50 dark:text-[#34D399]'
-                : 'bg-[#1E3A8A] text-white hover:bg-[#172554] dark:bg-[#F59E0B] dark:text-[#0F141E] dark:hover:bg-[#D97706]'
-            }`}
-          >
-            <Check className="h-4 w-4" />
-            <span>{isCompleted ? 'Розділ вивчено' : 'Позначити як вивчений'}</span>
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {onStartChapterQuiz && (
+              <button
+                type="button"
+                onClick={() => onStartChapterQuiz(chapter.id)}
+                className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg border border-[#DDD4BE] bg-[#FBF9F5] px-3.5 py-2 text-xs font-semibold text-[#1E3A8A] transition-colors hover:bg-[#EFEAE0] focus-visible:outline-2 focus-visible:outline-[#1E3A8A] sm:w-auto dark:border-[#2A354D] dark:bg-[#0F141E] dark:text-[#F59E0B] dark:hover:bg-[#1D2638] whitespace-nowrap"
+              >
+                <ClipboardCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Тест з розділу (3 питання)</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onToggleComplete(chapter.id)}
+              aria-pressed={isCompleted}
+              className={`inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[#1E3A8A] sm:w-auto whitespace-nowrap ${
+                isCompleted
+                  ? 'border border-[#059669]/40 bg-[#ECFDF5] text-[#047857] hover:bg-[#D1FAE5] dark:border-[#10B981]/40 dark:bg-[#064E3B]/50 dark:text-[#34D399]'
+                  : 'bg-[#1E3A8A] text-white hover:bg-[#172554] dark:bg-[#F59E0B] dark:text-[#0F141E] dark:hover:bg-[#D97706]'
+              }`}
+            >
+              <Check className="h-4 w-4" />
+              <span>{isCompleted ? 'Розділ вивчено' : 'Позначити як вивчений'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -590,7 +711,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
             <section
               key={section.id}
               aria-labelledby={section.id}
-              className="scroll-mt-20 space-y-5 border-t border-[#E5DEC9] pt-8 first:border-t-0 first:pt-0 dark:border-[#243047]"
+              className="scroll-mt-24 space-y-5 border-t border-[#E5DEC9] pt-8 first:border-t-0 first:pt-0 dark:border-[#243047]"
             >
               <div className="space-y-1">
                 <div className="font-mono text-xs font-semibold tabular-nums text-[#B45309] dark:text-[#F59E0B]">
@@ -622,7 +743,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       <section
         id={`ch-${chapter.id}-traps`}
         aria-labelledby={`ch-${chapter.id}-traps-title`}
-        className="scroll-mt-20 rounded-2xl border border-[#D97706]/40 bg-[#FEF3C7]/45 p-5 sm:p-7 dark:border-[#F59E0B]/35 dark:bg-[#451A03]/25"
+        className="scroll-mt-24 rounded-2xl border border-[#D97706]/40 bg-[#FEF3C7]/45 p-5 sm:p-7 dark:border-[#F59E0B]/35 dark:bg-[#451A03]/25"
       >
         <div className="flex items-center gap-2.5">
           <AlertTriangle className="h-5 w-5 shrink-0 text-[#B45309] dark:text-[#FBBF24]" aria-hidden="true" />
@@ -646,12 +767,17 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                 </span>
                 <span>{item.trap}</span>
               </div>
-              <p className="mt-1.5 text-sm leading-relaxed text-[#451A03] dark:text-[#FDE68A]/90">
-                <RichText
-                  text={item.explanation}
-                  boldClassName="font-semibold text-[#78350F] dark:text-white"
-                />
-              </p>
+              <ReadableText
+                text={item.explanation}
+                sentenceThreshold={240}
+                maxChunkChars={200}
+                listLengthThreshold={120}
+                boldClassName="font-semibold text-[#78350F] dark:text-white"
+                prefixClassName="font-semibold text-[#78350F] dark:text-white"
+                leadClassName="font-medium text-[#451A03] dark:text-[#FDE68A]"
+                bulletClassName="bg-[#B45309] dark:bg-[#FBBF24]"
+                className="mt-1.5 text-sm leading-relaxed text-[#451A03] dark:text-[#FDE68A]/90"
+              />
             </div>
           ))}
         </div>
@@ -661,7 +787,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       <section
         id={`ch-${chapter.id}-quotes`}
         aria-labelledby={`ch-${chapter.id}-quotes-title`}
-        className="scroll-mt-20 space-y-5"
+        className="scroll-mt-24 space-y-5"
       >
         <div className="flex items-center gap-2.5">
           <Quote className="h-5 w-5 shrink-0 text-[#1E3A8A] dark:text-[#60A5FA]" aria-hidden="true" />
@@ -709,7 +835,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       <section
         id={`ch-${chapter.id}-reference`}
         aria-labelledby={`ch-${chapter.id}-ref-title`}
-        className="scroll-mt-20 space-y-5"
+        className="scroll-mt-24 space-y-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -780,7 +906,12 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                   {item.date}
                 </div>
                 <div className="text-sm leading-relaxed text-[#292524] dark:text-[#CBD5E1]">
-                  {item.description}
+                  <ReadableText
+                    text={item.description}
+                    sentenceThreshold={200}
+                    listLengthThreshold={110}
+                    preferListForLongText={true}
+                  />
                 </div>
               </div>
             ))}
@@ -797,9 +928,13 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                 <div className="text-base font-bold text-[#1E3A8A] dark:text-[#93C5FD]">
                   {item.term}
                 </div>
-                <p className="mt-1.5 text-sm leading-relaxed text-[#292524] dark:text-[#CBD5E1]">
-                  {item.definition}
-                </p>
+                <ReadableText
+                  text={item.definition}
+                  sentenceThreshold={210}
+                  maxChunkChars={190}
+                  listLengthThreshold={115}
+                  className="mt-1.5 text-sm leading-relaxed text-[#292524] dark:text-[#CBD5E1]"
+                />
               </div>
             ))}
           </div>
@@ -822,9 +957,13 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
                     </span>
                   )}
                 </div>
-                <p className="mt-2 text-sm leading-relaxed text-[#292524] dark:text-[#CBD5E1]">
-                  {fig.description}
-                </p>
+                <ReadableText
+                  text={fig.description}
+                  sentenceThreshold={200}
+                  listLengthThreshold={110}
+                  preferListForLongText={true}
+                  className="mt-2 text-sm leading-relaxed text-[#292524] dark:text-[#CBD5E1]"
+                />
               </div>
             ))}
           </div>
@@ -835,7 +974,7 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       <section
         id={`ch-${chapter.id}-flashcards`}
         aria-labelledby={`ch-${chapter.id}-fc-title`}
-        className="scroll-mt-20 rounded-2xl border border-[#DDD4BE] bg-[#F7F4EC]/75 p-5 sm:p-7 dark:border-[#243047] dark:bg-[#111722]"
+        className="scroll-mt-24 rounded-2xl border border-[#DDD4BE] bg-[#F7F4EC]/75 p-5 sm:p-7 dark:border-[#243047] dark:bg-[#111722]"
       >
         <h2
           id={`ch-${chapter.id}-fc-title`}
@@ -852,43 +991,76 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
       </section>
 
       {/* Bottom Chapter Navigation & Completion */}
-      <footer className="flex flex-col gap-3 border-t border-[#E5DEC9] pt-6 sm:flex-row sm:items-center sm:justify-between dark:border-[#243047]">
-        <div className="flex items-center gap-2">
-          {chapter.id > 1 && (
+      <footer className="space-y-4 border-t border-[#E5DEC9] pt-6 dark:border-[#243047]">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {chapter.id > 1 ? (
             <button
               type="button"
               onClick={() => onNavigateChapter(chapter.id - 1)}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[#DDD4BE] bg-white px-4 py-2 text-sm font-medium text-[#1C1917] transition-colors hover:bg-[#F3EFE6] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F4F1EA] dark:hover:bg-[#1D2638] whitespace-nowrap"
+              className="group flex min-h-[56px] items-center gap-3 rounded-xl border border-[#DDD4BE] bg-white px-4 py-3 text-left transition-colors hover:border-[#1E3A8A]/40 hover:bg-[#FBF9F5] dark:border-[#2A354D] dark:bg-[#161D2B] dark:hover:border-[#F59E0B]/40 dark:hover:bg-[#1D2638]"
             >
-              <ArrowLeft className="h-4 w-4" />
-              <span>Розділ {chapter.id - 1}</span>
+              <ArrowLeft className="h-4 w-4 shrink-0 text-[#78716C] transition-transform group-hover:-translate-x-0.5 dark:text-[#94A3B8]" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="font-mono text-[11px] font-semibold text-[#78716C] dark:text-[#94A3B8]">
+                  Попередній · Розділ {chapter.id - 1}
+                </div>
+                {prevChapterTitle && (
+                  <div className="truncate text-sm font-semibold text-[#1C1917] dark:text-[#F4F1EA]">
+                    {prevChapterTitle}
+                  </div>
+                )}
+              </div>
             </button>
+          ) : (
+            <div className="hidden sm:block" />
           )}
+
           {chapter.id < totalChapters && (
             <button
               type="button"
               onClick={() => onNavigateChapter(chapter.id + 1)}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-[#1E3A8A] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#172554] dark:bg-[#F59E0B] dark:text-[#0F141E] dark:hover:bg-[#D97706] whitespace-nowrap"
+              className="group flex min-h-[56px] items-center justify-between gap-3 rounded-xl bg-[#1E3A8A] px-4 py-3 text-left text-white transition-colors hover:bg-[#172554] dark:bg-[#F59E0B] dark:text-[#0F141E] dark:hover:bg-[#D97706]"
             >
-              <span>Наступний: Розділ {chapter.id + 1}</span>
-              <ArrowRight className="h-4 w-4" />
+              <div className="min-w-0">
+                <div className="font-mono text-[11px] font-semibold text-white/80 dark:text-[#0F141E]/80">
+                  Далі · Розділ {chapter.id + 1}
+                </div>
+                {nextChapterTitle && (
+                  <div className="truncate text-sm font-semibold">
+                    {nextChapterTitle}
+                  </div>
+                )}
+              </div>
+              <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => onToggleComplete(chapter.id)}
-          aria-pressed={isCompleted}
-          className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap ${
-            isCompleted
-              ? 'border-[#059669]/40 bg-[#ECFDF5] text-[#047857] dark:border-[#10B981]/40 dark:bg-[#064E3B]/50 dark:text-[#34D399]'
-              : 'border-[#DDD4BE] bg-white text-[#1C1917] hover:bg-[#F3EFE6] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F4F1EA] dark:hover:bg-[#1D2638]'
-          }`}
-        >
-          <Check className="h-4 w-4" />
-          <span>{isCompleted ? 'Вивчено' : 'Позначити «Вивчено»'}</span>
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+          {onStartChapterQuiz && (
+            <button
+              type="button"
+              onClick={() => onStartChapterQuiz(chapter.id)}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-[#DDD4BE] bg-white px-4 py-2 text-sm font-medium text-[#1E3A8A] transition-colors hover:bg-[#F3EFE6] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F59E0B] dark:hover:bg-[#1D2638] whitespace-nowrap"
+            >
+              <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
+              <span>Пройти тест за розділом</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onToggleComplete(chapter.id)}
+            aria-pressed={isCompleted}
+            className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap ${
+              isCompleted
+                ? 'border-[#059669]/40 bg-[#ECFDF5] text-[#047857] dark:border-[#10B981]/40 dark:bg-[#064E3B]/50 dark:text-[#34D399]'
+                : 'border-[#DDD4BE] bg-white text-[#1C1917] hover:bg-[#F3EFE6] dark:border-[#2A354D] dark:bg-[#161D2B] dark:text-[#F4F1EA] dark:hover:bg-[#1D2638]'
+            }`}
+          >
+            <Check className="h-4 w-4" />
+            <span>{isCompleted ? 'Вивчено' : 'Позначити «Вивчено»'}</span>
+          </button>
+        </div>
       </footer>
 
       {/* Image Lightbox Modal with Prev/Next Navigation */}
@@ -960,12 +1132,29 @@ export const ChapterView: React.FC<ChapterViewProps> = ({
             </div>
 
             <div className="flex flex-1 items-center justify-center overflow-auto bg-[#F3EFE6]/70 p-4 dark:bg-[#0B0F17]">
-              <img
-                src={lightboxItem.src}
-                alt={lightboxItem.alt}
-                referrerPolicy="no-referrer"
-                className="max-h-[65vh] w-auto max-w-full rounded-lg object-contain shadow-md"
-              />
+              {failedUrls[lightboxItem.src] ? (
+                <div className="flex min-h-[240px] w-full max-w-md flex-col items-center justify-center gap-3 rounded-xl border border-[#DDD4BE] bg-white p-6 text-center text-sm text-[#57534E] dark:border-[#243047] dark:bg-[#161D2B] dark:text-[#94A3B8]">
+                  <ImageOff className="h-7 w-7" aria-hidden="true" />
+                  <span>Не вдалося завантажити ілюстрацію у високій роздільності</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRetryImage(lightboxItem.src)}
+                    className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-[#DDD4BE] bg-[#FBF9F5] px-4 py-2 text-xs font-semibold text-[#1E3A8A] hover:bg-[#EFEAE0] dark:border-[#2A354D] dark:bg-[#0F141E] dark:text-[#F59E0B]"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Повторити завантаження</span>
+                  </button>
+                </div>
+              ) : (
+                <img
+                  key={`${lightboxItem.src}-${retryCounts[lightboxItem.src] ?? 0}`}
+                  src={getDisplaySrc(lightboxItem.src)}
+                  alt={lightboxItem.alt}
+                  referrerPolicy="no-referrer"
+                  onError={() => markImageFailed(lightboxItem.src)}
+                  className="max-h-[65vh] w-auto max-w-full rounded-lg object-contain shadow-md"
+                />
+              )}
             </div>
 
             <div className="border-t border-[#E5DEC9] bg-white px-4 py-3.5 text-sm leading-relaxed text-[#292524] sm:px-6 dark:border-[#243047] dark:bg-[#161D2B] dark:text-[#CBD5E1]">

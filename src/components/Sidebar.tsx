@@ -1,5 +1,5 @@
-import React from 'react';
-import { Calendar, Check, Layers, Users, X } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { Calendar, Check, ClipboardCheck, Layers, Users, X } from 'lucide-react';
 import { ActiveView, Chapter } from '../types/portal';
 
 interface SidebarProps {
@@ -10,6 +10,7 @@ interface SidebarProps {
   onToggleChapterComplete: (chapterId: number) => void;
   memorizedCount: number;
   totalFlashcards: number;
+  bestQuizPercentage: number | null;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -22,11 +23,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleChapterComplete,
   memorizedCount,
   totalFlashcards,
+  bestQuizPercentage,
   isMobileOpen,
   onCloseMobile,
 }) => {
   const completedCount = completedChapterIds.length;
   const percentage = Math.round((completedCount / chapters.length) * 100);
+
+  // Close mobile drawer on Escape and lock body scroll while open
+  useEffect(() => {
+    if (!isMobileOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCloseMobile();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isMobileOpen, onCloseMobile]);
 
   const handleSelect = (view: ActiveView) => {
     onSelectView(view);
@@ -56,8 +76,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
             style={{ width: `${percentage}%` }}
           />
         </div>
-        <div className="mt-2 text-xs text-[#78716C] dark:text-[#8B97AD] tabular-nums">
-          Флеш-картки: {memorizedCount} з {totalFlashcards} запам’ятовано
+        <div className="mt-2 space-y-0.5 text-xs text-[#78716C] dark:text-[#8B97AD] tabular-nums">
+          <div>
+            Флеш-картки: {memorizedCount} з {totalFlashcards} запам’ятовано
+          </div>
+          {bestQuizPercentage !== null && (
+            <div>
+              Найкращий тест НМТ: <span className="font-semibold text-[#059669] dark:text-[#34D399]">{bestQuizPercentage}%</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -67,6 +94,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           Інструменти та довідники
         </div>
         <nav aria-label="Додаткові розділи порталу" className="space-y-0.5">
+          <button
+            type="button"
+            onClick={() => handleSelect({ type: 'quiz' })}
+            className={`flex min-h-[44px] lg:min-h-[38px] w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13.5px] font-medium transition-colors ${
+              activeView.type === 'quiz'
+                ? 'bg-[#1E3A8A] text-white dark:bg-[#F59E0B] dark:text-[#0F141E]'
+                : 'text-[#1C1917] hover:bg-[#EFEAE0] dark:text-[#E2E8F0] dark:hover:bg-[#1D2638]'
+            }`}
+          >
+            <ClipboardCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">Тест-симулятор НМТ (30 питань)</span>
+          </button>
+
           <button
             type="button"
             onClick={() => handleSelect({ type: 'timeline' })}
@@ -121,9 +161,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             return (
               <div
                 key={chapter.id}
-                className={`group flex items-center gap-1.5 rounded-lg border transition-colors ${
+                className={`group flex items-center gap-1 rounded-lg border transition-colors ${
                   isActive
-                    ? 'border-[#1E3A8A]/30 bg-white shadow-xs dark:border-[#F59E0B]/40 dark:bg-[#1D2638]'
+                    ? 'border-[#1E3A8A]/35 bg-white shadow-xs dark:border-[#F59E0B]/45 dark:bg-[#1D2638]'
                     : 'border-transparent hover:bg-[#EFEAE0]/70 dark:hover:bg-[#161D2B]'
                 }`}
               >
@@ -162,7 +202,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   }
                   aria-pressed={isCompleted}
                   title={isCompleted ? 'Вивчено' : 'Позначити як вивчений'}
-                  className="mr-1.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[#E5DEC9]/60 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] dark:hover:bg-[#2A354D]"
+                  className="mr-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[#E5DEC9]/60 focus-visible:outline-2 focus-visible:outline-[#1E3A8A] dark:hover:bg-[#2A354D]"
                 >
                   <span
                     className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowUp } from 'lucide-react';
 import { CHAPTERS, HISTORICAL_FIGURES, TIMELINE_EVENTS } from './data/courseData';
+import { NMT_QUIZ_QUESTIONS } from './data/quizData';
 import { ActiveView, SearchResult } from './types/portal';
 import { calculateProgress, searchPortal } from './utils/portalLogic';
 import { Header } from './components/Header';
@@ -8,11 +10,14 @@ import { ChapterView } from './components/ChapterView';
 import { TimelineView } from './components/TimelineView';
 import { FiguresView } from './components/FiguresView';
 import { GlobalTrainerView } from './components/GlobalTrainerView';
+import { NmtQuizView } from './components/NmtQuizView';
 
 const STORAGE_KEYS = {
   theme: 'nmt_portal_theme_v1',
   completedChapters: 'nmt_portal_completed_chapters_v1',
   memorizedCards: 'nmt_portal_memorized_cards_v1',
+  activeView: 'nmt_portal_active_view_v1',
+  bestQuiz: 'nmt_portal_best_quiz_v1',
 };
 
 function readStoredIds<T>(key: string, fallback: T[]): T[] {
@@ -23,6 +28,53 @@ function readStoredIds<T>(key: string, fallback: T[]): T[] {
     return Array.isArray(parsed) ? parsed : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function readStoredView(): ActiveView {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.activeView);
+    if (!raw) return { type: 'chapter', chapterId: 1 };
+    const parsed = JSON.parse(raw) as ActiveView;
+    if (
+      parsed &&
+      (parsed.type === 'timeline' ||
+        parsed.type === 'figures' ||
+        parsed.type === 'trainer' ||
+        parsed.type === 'quiz')
+    ) {
+      return parsed;
+    }
+    if (
+      parsed &&
+      parsed.type === 'chapter' &&
+      typeof parsed.chapterId === 'number' &&
+      parsed.chapterId >= 1 &&
+      parsed.chapterId <= CHAPTERS.length
+    ) {
+      return { type: 'chapter', chapterId: parsed.chapterId };
+    }
+    return { type: 'chapter', chapterId: 1 };
+  } catch {
+    return { type: 'chapter', chapterId: 1 };
+  }
+}
+
+function readBestQuiz(): { percentage: number; nmtScaledScore: number } | null {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.bestQuiz);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.percentage === 'number' &&
+      typeof parsed.nmtScaledScore === 'number'
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -43,9 +95,29 @@ export default function App() {
     readStoredIds<string>(STORAGE_KEYS.memorizedCards, []),
   );
 
-  const [activeView, setActiveView] = useState<ActiveView>({ type: 'chapter', chapterId: 1 });
+  const [activeView, setActiveView] = useState<ActiveView>(() => readStoredView());
+  const [bestQuizResult, setBestQuizResult] = useState<{
+    percentage: number;
+    nmtScaledScore: number;
+  } | null>(() => readBestQuiz());
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [readingProgress, setReadingProgress] = useState<number>(0);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [requestedRefTab, setRequestedRefTab] = useState<{
+    chapterId: number;
+    tab: 'dates' | 'terms' | 'figures';
+    seq: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const onScroll = () => {
+      setShowScrollTop(window.scrollY > 520);
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   // Sync dark mode class on <html> and persist
   useEffect(() => {
@@ -83,6 +155,15 @@ export default function App() {
     }
   }, [memorizedCardIds]);
 
+  // Persist active view
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.activeView, JSON.stringify(activeView));
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeView]);
+
   const searchResults = useMemo(
     () => searchPortal(searchQuery, CHAPTERS),
     [searchQuery],
@@ -110,6 +191,21 @@ export default function App() {
     );
   };
 
+  const handleSaveQuizResult = (percentage: number, nmtScaledScore: number) => {
+    setBestQuizResult((prev) => {
+      if (prev && prev.percentage >= percentage) {
+        return prev;
+      }
+      const next = { percentage, nmtScaledScore };
+      try {
+        window.localStorage.setItem(STORAGE_KEYS.bestQuiz, JSON.stringify(next));
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  };
+
   const handleSelectView = (view: ActiveView) => {
     setActiveView(view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -121,9 +217,23 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleStartChapterQuiz = (chapterId: number) => {
+    setActiveView({ type: 'quiz', initialChapterId: chapterId });
+    setIsMobileMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const handleSelectSearchResult = (result: SearchResult) => {
     setActiveView({ type: 'chapter', chapterId: result.chapterId });
     setIsMobileMenuOpen(false);
+
+    if (result.kind === 'Дата') {
+      setRequestedRefTab((prev) => ({ chapterId: result.chapterId, tab: 'dates', seq: (prev?.seq ?? 0) + 1 }));
+    } else if (result.kind === 'Термін') {
+      setRequestedRefTab((prev) => ({ chapterId: result.chapterId, tab: 'terms', seq: (prev?.seq ?? 0) + 1 }));
+    } else if (result.kind === 'Персоналія') {
+      setRequestedRefTab((prev) => ({ chapterId: result.chapterId, tab: 'figures', seq: (prev?.seq ?? 0) + 1 }));
+    }
 
     window.setTimeout(() => {
       let anchorId = '';
@@ -133,6 +243,8 @@ export default function App() {
         anchorId = `ch-${result.chapterId}-reference`;
       } else if (result.kind === 'Флеш-картка') {
         anchorId = `ch-${result.chapterId}-flashcards`;
+      } else if (result.kind === 'Теорія' && result.sectionId) {
+        anchorId = result.sectionId;
       }
 
       if (anchorId) {
@@ -143,13 +255,24 @@ export default function App() {
         }
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, 60);
+    }, 80);
   };
+
+  const handleReadProgressChange = useCallback((pct: number) => {
+    setReadingProgress(pct);
+  }, []);
 
   const activeChapter =
     activeView.type === 'chapter'
       ? CHAPTERS.find((c) => c.id === activeView.chapterId) ?? CHAPTERS[0]
       : null;
+
+  const prevChapterTitle = activeChapter
+    ? CHAPTERS.find((c) => c.id === activeChapter.id - 1)?.shortTitle
+    : undefined;
+  const nextChapterTitle = activeChapter
+    ? CHAPTERS.find((c) => c.id === activeChapter.id + 1)?.shortTitle
+    : undefined;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[#FBF9F5] text-[#1C1917] transition-colors duration-200 dark:bg-[#0F141E] dark:text-[#F4F1EA]">
@@ -164,6 +287,7 @@ export default function App() {
         totalChapters={progress.totalCount}
         isMobileMenuOpen={isMobileMenuOpen}
         onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+        readingProgress={activeView.type === 'chapter' ? readingProgress : null}
       />
 
       <div className="mx-auto flex max-w-[1440px]">
@@ -175,6 +299,7 @@ export default function App() {
           onToggleChapterComplete={handleToggleChapterComplete}
           memorizedCount={memorizedCardIds.length}
           totalFlashcards={totalFlashcards}
+          bestQuizPercentage={bestQuizResult?.percentage ?? null}
           isMobileOpen={isMobileMenuOpen}
           onCloseMobile={() => setIsMobileMenuOpen(false)}
         />
@@ -187,8 +312,24 @@ export default function App() {
               isCompleted={completedChapterIds.includes(activeChapter.id)}
               onToggleComplete={handleToggleChapterComplete}
               onNavigateChapter={handleOpenChapter}
+              onStartChapterQuiz={handleStartChapterQuiz}
+              prevChapterTitle={prevChapterTitle}
+              nextChapterTitle={nextChapterTitle}
+              requestedRefTab={requestedRefTab}
               memorizedCardIds={memorizedCardIds}
               onToggleMemorizedCard={handleToggleMemorizedCard}
+              onReadProgressChange={handleReadProgressChange}
+            />
+          )}
+
+          {activeView.type === 'quiz' && (
+            <NmtQuizView
+              questions={NMT_QUIZ_QUESTIONS}
+              chapters={CHAPTERS}
+              initialChapterId={activeView.initialChapterId}
+              bestScore={bestQuizResult}
+              onSaveResult={handleSaveQuizResult}
+              onOpenChapter={handleOpenChapter}
             />
           )}
 
@@ -197,7 +338,11 @@ export default function App() {
           )}
 
           {activeView.type === 'figures' && (
-            <FiguresView figures={HISTORICAL_FIGURES} onOpenChapter={handleOpenChapter} />
+            <FiguresView
+              figures={HISTORICAL_FIGURES}
+              chapters={CHAPTERS}
+              onOpenChapter={handleOpenChapter}
+            />
           )}
 
           {activeView.type === 'trainer' && (
@@ -214,6 +359,18 @@ export default function App() {
           </footer>
         </main>
       </div>
+
+      {showScrollTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="Повернутися до гори сторінки"
+          title="До гори"
+          className="fixed right-4 bottom-5 z-30 inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#DDD4BE] bg-white/95 text-[#1E3A8A] shadow-lg backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:bg-[#F3EFE6] focus-visible:outline-2 focus-visible:outline-[#1E3A8A] sm:right-6 sm:bottom-6 dark:border-[#2A354D] dark:bg-[#161D2B]/95 dark:text-[#F59E0B] dark:hover:bg-[#1D2638]"
+        >
+          <ArrowUp className="h-5 w-5" aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 }
